@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  # Redis - Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: meta-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - meta-network
+
+  # PostgreSQL - Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: meta-postgres
+    environment:
+      POSTGRES_USER: meta_user
+      POSTGRES_PASSWORD: meta_password
+      POSTGRES_DB: nitro_meta_erp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database-migrations.sql:/docker-entrypoint-initdb.d/01-migrations.sql
+      - ./unified-inbox-schema.sql:/docker-entrypoint-initdb.d/02-unified-inbox.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meta_user -d nitro_meta_erp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - meta-network
+
+  # API Gateway - Express Application
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: meta-api-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://meta_user:meta_password@postgres:5432/nitro_meta_erp
+      META_WEBHOOK_VERIFY_TOKEN: ${META_WEBHOOK_VERIFY_TOKEN:-test-token}
+      META_APP_SECRET: ${META_APP_SECRET:-test-secret}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
+      NITRO_ERP_URL: ${NITRO_ERP_URL:-http://host.docker.internal:5000}
+      LOG_LEVEL: info
+      WEBHOOK_RATE_LIMIT_WINDOW_MS: "60000"
+      WEBHOOK_RATE_LIMIT_MAX: "1000"
+      WHATSAPP_RATE_LIMIT_WINDOW_MS: "60000"
+      WHATSAPP_RATE_LIMIT_MAX: "100"
+      AUTH_RATE_LIMIT_WINDOW_MS: "60000"
+      AUTH_RATE_LIMIT_MAX: "10"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - meta-network
+    restart: unless-stopped
+
+  # Worker Service - Queue Processor
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: meta-worker
+    command: npm run worker
+    environment:
+      NODE_ENV: production
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://meta_user:meta_password@postgres:5432/nitro_meta_erp
+      META_APP_SECRET: ${META_APP_SECRET:-test-secret}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
+      NITRO_ERP_URL: ${NITRO_ERP_URL:-http://host.docker.internal:5000}
+      LOG_LEVEL: info
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - meta-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2  # Scale workers horizontally
+
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+networks:
+  meta-network:
+    driver: bridge
