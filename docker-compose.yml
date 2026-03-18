@@ -1,4 +1,4 @@
-version: '3.8'
+# version: '3.8'  # Removed - obsolete in newer Docker Compose
 
 services:
   # Redis - Message Broker
@@ -83,7 +83,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: meta-worker
     command: npm run worker
     environment:
       NODE_ENV: production
